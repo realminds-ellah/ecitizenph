@@ -5,8 +5,7 @@
   eCitizenPH intelligence layer: a proactive government-benefits recommender
   gated behind a simulated PhilSys National ID verification, with an explicit
   national-ID-plus-supporting-documents flow for applying to each recommended
-  program. Originally scaffolded in Figma Make — the original project is
-  available at https://www.figma.com/design/HIJb4QZyYmaTbNkSHETqyE/Define-Design-Tokens-eCitizen-Implementation-1-.
+  program.
 
   ## Running the code
 
