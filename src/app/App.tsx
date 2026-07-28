@@ -173,9 +173,12 @@ const CURRENT_USER: UserEntity = {
 };
 
 const NOTIFICATIONS: NotificationEntity[] = [
-  { id: "notif-001", title: "E-ID Renewal Approved", shortBody: "Your Electronic ID renewal has been approved.", read: false, timestamp: "2026-07-20T09:15:00", linkedSection: "activity" },
-  { id: "notif-002", title: "Business Permit Update", shortBody: "Your application is being reviewed.", read: false, timestamp: "2026-07-18T14:30:00", linkedSection: "activity" },
+  { id: "notif-001", title: "Naaprubahan na ang E-ID Renewal", shortBody: "Naaprubahan na ang inyong Electronic ID renewal.", read: false, timestamp: "2026-07-20T09:15:00", linkedSection: "home" },
+  { id: "notif-002", title: "Update sa Business Permit", shortBody: "Isinasaalang-alang pa ang inyong aplikasyon.", read: false, timestamp: "2026-07-18T14:30:00", linkedSection: "home" },
   { id: "notif-003", title: "PhilHealth Konsulta", shortBody: "Libreng konsultasyon available sa inyong lugar.", read: true, timestamp: "2026-07-14T08:00:00", linkedSection: "health" },
+  { id: "notif-004", title: "Paalala: Barangay ID Renewal", shortBody: "Malapit nang mag-expire ang inyong Barangay ID sa Brgy. San Pablo Norte.", read: false, timestamp: "2026-07-22T10:00:00", linkedSection: "services" },
+  { id: "notif-005", title: "Naitala ang SSS Contribution", shortBody: "Matagumpay na naitala ang inyong SSS contribution para sa buwan ng Hunyo.", read: true, timestamp: "2026-07-10T07:30:00", linkedSection: "profile" },
+  { id: "notif-006", title: "DOLE Job Fair sa Malolos", shortBody: "May job fair sa Malolos City Hall sa Agosto 5. Magdala ng resume at valid ID.", read: false, timestamp: "2026-07-19T13:00:00", linkedSection: "services" },
 ];
 
 const LGU_UPDATES: LguUpdateEntity[] = [
@@ -402,6 +405,23 @@ function computeRecommendations(profile: CitizenProfile): ProgramRec[] {
         { description: "May hawak o mag-a-apply ng PWD ID", matched: profile.isPWD },
         { description: "Filipino citizen", matched: true },
         { description: "Nakatala sa barangay", matched: true },
+      ],
+    },
+    {
+      id: "ayuda", name: "LGU Ayuda (Cash Assistance)", fullName: "Local Government Unit Financial Assistance Program",
+      agency: "LGU", agencyColor: "#6E4AA6",
+      description: "One-time o regular na cash assistance mula sa lokal na pamahalaan para sa mga indigent at low-income na residente.",
+      ctaLabel: "Mag-apply sa Barangay",
+      requiredDocuments: [
+        "Verified PhilSys National ID (or PSN)",
+        "Barangay Certificate of Indigency o Residency",
+        "Proof of household income (kung mayroon)",
+      ],
+      rules: [
+        { description: "Nakatala bilang residente ng LGU/barangay", matched: true },
+        { description: "Buwanang kita sa ibaba ng ₱24,000", matched: isLowIncome },
+        { description: "May umaasang anak, PWD, o senior sa pamilya", matched: profile.hasSchoolAgeDependents || profile.isPWD },
+        { description: "18 taong gulang pataas", matched: age >= 18 },
       ],
     },
   ];
@@ -2391,6 +2411,9 @@ function RecommendationCard({ rec, isExpanded, onToggle, onApply, applied }: { r
         <span style={{ display: "inline-flex", alignItems: "center", background: C.iconTileTint, borderRadius: 8, padding: "4px 8px", fontFamily: nunito, fontSize: 11, fontWeight: 600, color: C.primary }}>
           {rec.agency}
         </span>
+        <p style={{ fontSize: 10, color: C.textTertiary, margin: "8px 0 0", lineHeight: "13px" }}>
+          Batay sa iyong impormasyon — hindi ito garantisadong pag-apruba mula sa ahensya.
+        </p>
       </div>
 
       {isExpanded && (
