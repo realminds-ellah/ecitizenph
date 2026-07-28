@@ -178,7 +178,7 @@ const NOTIFICATIONS: NotificationEntity[] = [
   { id: "notif-003", title: "PhilHealth Konsulta", shortBody: "Libreng konsultasyon available sa inyong lugar.", read: true, timestamp: "2026-07-14T08:00:00", linkedSection: "health" },
   { id: "notif-004", title: "Paalala: Barangay ID Renewal", shortBody: "Malapit nang mag-expire ang inyong Barangay ID sa Brgy. San Pablo Norte.", read: false, timestamp: "2026-07-22T10:00:00", linkedSection: "services" },
   { id: "notif-005", title: "Naitala ang SSS Contribution", shortBody: "Matagumpay na naitala ang inyong SSS contribution para sa buwan ng Hunyo.", read: true, timestamp: "2026-07-10T07:30:00", linkedSection: "profile" },
-  { id: "notif-006", title: "DOLE Job Fair sa Malolos", shortBody: "May job fair sa Malolos City Hall sa Agosto 5. Magdala ng resume at valid ID.", read: false, timestamp: "2026-07-19T13:00:00", linkedSection: "services" },
+  { id: "notif-006", title: "Bukas na ang CHED Scholarship Applications", shortBody: "Available na ang aplikasyon para sa CHED Tulong Dunong (TES) ngayong AY 2026–2027. Tingnan kung kwalipikado ka sa eCitizenPH.", read: false, timestamp: "2026-07-19T13:00:00", linkedSection: "ecitizen" },
 ];
 
 const LGU_UPDATES: LguUpdateEntity[] = [
@@ -2261,6 +2261,17 @@ POST → eVerify biometrics endpoint
     { icon: AlertTriangle, title: 'Panatilihin ang "Simulated lang ito" disclaimer', body: "Ang disclaimer sa Step 1 ay nagpapaliwanag na demo data (Juan dela Cruz) ang ginagamit — hindi kung ang API call mismo ay totoong gumagana." },
   ];
 
+  const API_ROADMAP: { name: string; status: "Wired" | "Concept demo" | "Stub ready"; priority: "High" | "Situational"; note: string }[] = [
+    { name: "eVerify (Identity + Face Liveness)", status: "Wired", priority: "High", note: "Buong PSN + liveness flow — totoong SDK kung naka-configure ang VITE_EVERIFY_PUBLIC_KEY, simulated fallback kung wala." },
+    { name: "eReport (Citizen Complaints)", status: "Wired", priority: "High", note: "Buong file-a-report + OTP-gated tracking. Kumokonekta sa totoong sandbox kapag naka-configure ang EREPORT_BASE_URL/ACCESS_CODE." },
+    { name: "eMessage (SMS Notifications)", status: "Wired", priority: "High", note: "Ginagamit na sa eVerify at eReport; idinagdag din ngayon sa Apply flow (eCitizenPH programs) — server/index.mjs /api/notify-application." },
+    { name: "eGovPH Single Sign-On", status: "Concept demo", priority: "High", note: "Walang sandbox credentials na ibinigay para dito. Profile tab's Linked Accounts nagpapakita ng target UX: parehong verified eVerify session ang gagamitin, walang hiwalay na login. /api/sso/exchange naka-scaffold, 501 hanggang ma-configure." },
+    { name: "Face Liveness sa eReport (high-stakes reports)", status: "Concept demo", priority: "Situational", note: "Ang liveness na ginagamit ng eVerify ay dapat ding i-bundle sa eReport para sa sensitive na report types (hal. corruption). Hindi pa naisasagawa — walang kumpirmadong report_type codes mula sa eReport dataset para matukoy alin ang 'sensitive'." },
+    { name: "DBM Compass (Budget Transparency)", status: "Stub ready", priority: "Situational", note: "Pinaka-malakas na fit sa eReport para sa budget-related complaints — cross-reference laban sa totoong appropriations data. /api/dbm-compass/appropriations naka-scaffold, walang sandbox credentials." },
+    { name: "eGovPay (Digital Payments)", status: "Stub ready", priority: "Situational", note: "Walang fee/permit flow sa prototype na ito ngayon, kaya wala pang kailangan dito. /api/egovpay/checkout naka-scaffold para sa susunod." },
+    { name: "eGov AI (Document Intelligence)", status: "Stub ready", priority: "Situational", note: "Walang file upload sa prototype (ApplyModal ay self-attestation checklist lang, sadyang ganito). /api/egov-ai/classify naka-scaffold para sa susunod kapag idinagdag ang upload." },
+  ];
+
   return (
     <div role="dialog" aria-modal="true" aria-label="Dev Handoff — eVerify Integration"
       style={{ position: "absolute", inset: 0, zIndex: 90, background: C.canvas, display: "flex", flexDirection: "column", borderRadius: 48, overflow: "hidden" }}>
@@ -2384,6 +2395,30 @@ POST → eVerify biometrics endpoint
           </div>
         </div>
 
+        {/* API Integration Roadmap */}
+        <div style={{ margin: "16px 16px 0" }}>
+          <p style={{ fontFamily: nunito, fontSize: 11, fontWeight: 700, color: C.textTertiary, letterSpacing: "0.8px", textTransform: "uppercase", margin: "0 0 10px" }}>API Integration Roadmap</p>
+          <div style={{ background: C.surface, borderRadius: 16, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            {API_ROADMAP.map((row, idx) => {
+              const statusColor = row.status === "Wired" ? C.successText : row.status === "Concept demo" ? C.warningText : C.textTertiary;
+              const statusBg = row.status === "Wired" ? C.successBg : row.status === "Concept demo" ? C.warningBg : C.canvas;
+              return (
+                <div key={row.name}>
+                  {idx > 0 && <div style={{ height: 1, background: C.border }} />}
+                  <div style={{ padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                      <p style={{ fontFamily: nunito, fontSize: 12, fontWeight: 700, color: C.textPrimary, margin: 0, lineHeight: "16px", flex: 1 }}>{row.name}</p>
+                      <span style={{ flexShrink: 0, fontFamily: nunito, fontSize: 9, fontWeight: 700, color: statusColor, background: statusBg, borderRadius: 999, padding: "3px 8px", whiteSpace: "nowrap" }}>{row.status}</span>
+                    </div>
+                    <span style={{ fontFamily: nunito, fontSize: 9, fontWeight: 600, color: C.textTertiary, letterSpacing: "0.5px", textTransform: "uppercase" }}>{row.priority} priority</span>
+                    <p style={{ fontSize: 12, color: C.textSecondary, margin: "4px 0 0", lineHeight: "16px" }}>{row.note}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Footer spacer */}
         <div style={{ height: 40 }} />
       </div>
@@ -2485,6 +2520,7 @@ function generateCaseNumber(agency: string): string {
 function ApplyModal({ rec, user, onClose, onSubmitted }: { rec: ProgramRec; user: UserEntity; onClose: () => void; onSubmitted: (app: SubmittedApplication) => void }) {
   const [checked, setChecked] = useState<boolean[]>(() => rec.requiredDocuments.map(() => false));
   const [submitted, setSubmitted] = useState<SubmittedApplication | null>(null);
+  const [smsStatus, setSmsStatus] = useState<"pending" | "sent" | "skipped">("pending");
   const btnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { btnRef.current?.focus(); }, []);
 
@@ -2494,7 +2530,7 @@ function ApplyModal({ rec, user, onClose, onSubmitted }: { rec: ProgramRec; user
     setChecked((prev) => prev.map((v, idx) => (idx === i ? !v : v)));
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const app: SubmittedApplication = {
       id: `app-${Date.now()}`,
       programId: rec.id,
@@ -2505,6 +2541,27 @@ function ApplyModal({ rec, user, onClose, onSubmitted }: { rec: ProgramRec; user
     };
     setSubmitted(app);
     onSubmitted(app);
+
+    // eMessage confirmation — same "notify on status change" pattern as
+    // eVerify (/api/verify) and eReport (/api/ereport/complaint). Best-effort:
+    // the application is already recorded locally regardless of SMS outcome.
+    try {
+      const res = await fetch("/api/notify-application", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mobile: user.mobileNumber.replace(/\D/g, ""),
+          first_name: user.firstName,
+          program_name: rec.name,
+          agency: rec.agency,
+          case_number: app.caseNumber,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setSmsStatus(data?.sms?.ok ? "sent" : "skipped");
+    } catch {
+      setSmsStatus("skipped");
+    }
   }
 
   return (
@@ -2570,9 +2627,24 @@ function ApplyModal({ rec, user, onClose, onSubmitted }: { rec: ProgramRec; user
             </div>
             <p style={{ fontFamily: nunito, fontSize: 16, fontWeight: 700, color: C.successText, margin: "0 0 8px" }}>Naipasa na ang aplikasyon!</p>
             <p style={{ fontSize: 14, color: C.textSecondary, margin: "0 0 4px" }}>{submitted.programName} · {submitted.agency}</p>
-            <p style={{ fontFamily: "monospace", fontSize: 13, color: C.textPrimary, background: C.canvas, borderRadius: 8, padding: "6px 12px", margin: "8px 0 20px" }}>
+            <p style={{ fontFamily: "monospace", fontSize: 13, color: C.textPrimary, background: C.canvas, borderRadius: 8, padding: "6px 12px", margin: "8px 0 16px" }}>
               Case #: {submitted.caseNumber}
             </p>
+            {smsStatus === "pending" && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: C.textTertiary, fontSize: 12, marginBottom: 16 }}>
+                <RefreshCw size={13} strokeWidth={2} /> Pinapadala ang SMS confirmation (eMessage)...
+              </span>
+            )}
+            {smsStatus === "sent" && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.successBg, color: C.successText, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
+                <Check size={13} strokeWidth={2.5} /> SMS confirmation naipadala (eMessage)
+              </span>
+            )}
+            {smsStatus === "skipped" && (
+              <p style={{ fontSize: 11, color: C.textTertiary, marginBottom: 16 }}>
+                Hindi pa naka-configure ang eMessage (EMESSAGE_BASE_URL/API_TOKEN) — nilaktawan ang SMS confirmation.
+              </p>
+            )}
             <p style={{ fontSize: 11, color: C.textTertiary, lineHeight: "16px", marginBottom: 24, padding: "0 16px" }}>
               Simulated lang ito — walang tunay na aplikasyon ang naipasa sa {submitted.agency}. Makikita ito sa "Aking mga Aplikasyon" habang bukas ang app na ito.
             </p>
@@ -2891,12 +2963,35 @@ function ChatPanel({ profile, recommendations, onClose }: { profile: CitizenProf
 // ─── Profile Page ─────────────────────────────────────────────────────────────
 
 function ProfilePage({ user }: { user: UserEntity }) {
-  const LINKED = [
+  // eGovPH SSO demo: linking an account reuses the citizen's already-verified
+  // eVerify session instead of a separate login — that's the whole point of
+  // SSO. /api/sso/exchange is called first; without real EGOVPH_SSO_TOKEN_URL/
+  // CLIENT_SECRET credentials it returns 501, so this falls back to a local
+  // simulation either way, same dev-fallback pattern as eVerify's liveness
+  // check when no VITE_EVERIFY_PUBLIC_KEY is set.
+  const [linkedAccounts, setLinkedAccounts] = useState([
     { id: "sss",  label: "SSS",        desc: "Social Security System", linked: true,  icon: ShieldCheck, color: "#123C69" },
     { id: "ph",   label: "PhilHealth", desc: "Health Insurance",       linked: true,  icon: HeartPulse,  color: "#C13333" },
     { id: "pi",   label: "Pag-IBIG",   desc: "Housing & Fund",         linked: false, icon: Landmark,    color: "#6941C6" },
     { id: "umid", label: "UMID",       desc: "Unified Multi-Purpose ID", linked: true, icon: CreditCard, color: "#B77A12" },
-  ];
+  ]);
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+
+  async function handleLink(accId: string) {
+    setLinkingId(accId);
+    try {
+      await fetch("/api/sso/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ psn: user.idNumber, target_service: accId }),
+      });
+    } catch {
+      // unreachable/not configured — falls back to local simulation below regardless
+    }
+    await new Promise((r) => setTimeout(r, 900));
+    setLinkedAccounts((prev) => prev.map((a) => (a.id === accId ? { ...a, linked: true } : a)));
+    setLinkingId(null);
+  }
 
   return (
     <div style={{ paddingTop: 16, paddingBottom: 8 }}>
@@ -2924,9 +3019,12 @@ function ProfilePage({ user }: { user: UserEntity }) {
       </div>
 
       <div style={{ margin: "0 16px 20px" }}>
-        <p style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 10 }}>Linked Accounts</p>
+        <p style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 2 }}>Linked Accounts</p>
+        <p style={{ fontSize: 11, color: C.textTertiary, margin: "0 0 10px", lineHeight: "15px" }}>
+          Awtomatikong na-lilink gamit ang parehong verified session mo (eGovPH SSO) — walang hiwalay na password.
+        </p>
         <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, boxShadow: shadow.card, overflow: "hidden" }}>
-          {LINKED.map((acc, idx) => (
+          {linkedAccounts.map((acc, idx) => (
             <div key={acc.id}>
               {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
               <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
@@ -2937,9 +3035,19 @@ function ProfilePage({ user }: { user: UserEntity }) {
                   <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{acc.label}</p>
                   <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>{acc.desc}</p>
                 </div>
-                <span style={{ fontSize: 11, fontWeight: 600, color: acc.linked ? C.successText : C.textTertiary, background: acc.linked ? C.successBg : C.canvas, padding: "3px 10px", borderRadius: 999 }}>
-                  {acc.linked ? "Linked" : "Link"}
-                </span>
+                {acc.linked ? (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: C.successText, background: C.successBg, padding: "3px 10px", borderRadius: 999 }}>
+                    Linked
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => handleLink(acc.id)}
+                    disabled={linkingId === acc.id}
+                    style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: C.textTertiary, background: C.canvas, padding: "3px 10px", borderRadius: 999, border: "none", cursor: linkingId === acc.id ? "default" : "pointer" }}
+                  >
+                    {linkingId === acc.id ? (<><RefreshCw size={11} strokeWidth={2} /> SSO...</>) : "Link"}
+                  </button>
+                )}
               </div>
             </div>
           ))}
