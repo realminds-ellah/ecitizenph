@@ -484,7 +484,7 @@ const DIGITAL_ID_STRIP_H = 60;
 const BOTTOM_NAV_H = 56;
 const SAFE_BOTTOM = 28;
 
-function ECitizenAppBar({ unreadCount, onQrScan, onDevHandoff }: { unreadCount: number; onQrScan: () => void; onDevHandoff: () => void }) {
+function ECitizenAppBar({ unreadCount, onQrScan, onDevHandoff, onOpenNotifications }: { unreadCount: number; onQrScan: () => void; onDevHandoff: () => void; onOpenNotifications: () => void }) {
   return (
     <div style={{ position: "absolute", top: STATUS_BAR_H, left: 0, right: 0, height: TOP_BAR_H, display: "flex", alignItems: "center", justifyContent: "space-between", paddingInline: 16, background: C.surface, borderBottom: `1px solid ${C.border}`, zIndex: 20 }}>
       {/* Left cluster */}
@@ -501,7 +501,7 @@ function ECitizenAppBar({ unreadCount, onQrScan, onDevHandoff }: { unreadCount: 
           ⚙️ Concept Prototype
         </button>
         {/* Bell */}
-        <button aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"} style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", background: "none", border: "none", cursor: "pointer" }}>
+        <button onClick={onOpenNotifications} aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"} style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", position: "relative", background: "none", border: "none", cursor: "pointer" }}>
           <Bell size={24} color={C.textPrimary} strokeWidth={1.8} />
           {unreadCount > 0 && (
             <span style={{ position: "absolute", top: 8, right: 8, width: 8, height: 8, borderRadius: 999, background: "#CE1126", border: `2px solid ${C.surface}` }} />
@@ -544,6 +544,115 @@ function DigitalIDStrip() {
         <p style={{ fontFamily: nunito, fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0, lineHeight: "19px" }}>Juan dela Cruz</p>
         <p style={{ fontFamily: nunito, fontSize: 12, fontWeight: 400, color: C.successText, margin: 0, lineHeight: "16px" }}>PSN: •••• •••• 1234 &nbsp;✓ Verified</p>
       </div>
+    </div>
+  );
+}
+
+// ─── Notifications Panel ──────────────────────────────────────────────────────
+//
+// Two kinds of entries render side by side here: the static seed
+// notifications (E-ID renewal, business permit, etc.) and the notifications
+// generated live by MATCH_THRESHOLD in App() whenever the recommendation
+// engine (computeRecommendations) crosses a high-match program for the
+// citizen's current profile — the "our algorithm noticed you qualify" moment.
+// Both share the same NotificationEntity shape; a `kind` field just picks
+// the icon/tint so a match notification reads differently from a routine
+// status update.
+
+function relativeNotifTime(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "ngayon lang";
+  if (m < 60) return `${m}m ang nakalipas`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ang nakalipas`;
+  return `${Math.floor(h / 24)}d ang nakalipas`;
+}
+
+function NotificationsPanel({ notifications, onClose, onMarkRead, onNavigate }: { notifications: NotificationEntity[]; onClose: () => void; onMarkRead: (id: string) => void; onNavigate: (section: string) => void }) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { btnRef.current?.focus(); }, []);
+  const sorted = [...notifications].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Notifications" style={{ position: "absolute", inset: 0, zIndex: 95, background: C.surface, display: "flex", flexDirection: "column", borderRadius: 48, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "52px 16px 16px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <p style={{ fontFamily: nunito, fontSize: 17, fontWeight: 700, color: C.textPrimary }}>Mga Abiso</p>
+        <button ref={btnRef} aria-label="Close" onClick={onClose} style={{ width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", background: C.iconTileTint, borderRadius: 999, border: "none", cursor: "pointer" }}>
+          <X size={20} color={C.textPrimary} strokeWidth={2} />
+        </button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none" }}>
+        {sorted.length === 0 ? (
+          <div style={{ padding: "48px 24px", textAlign: "center" }}>
+            <Bell size={28} color={C.textTertiary} strokeWidth={1.5} style={{ margin: "0 auto 12px", display: "block" }} />
+            <p style={{ fontSize: 14, color: C.textSecondary }}>Wala ka pang abiso.</p>
+          </div>
+        ) : (
+          sorted.map((n, idx) => {
+            const isMatch = n.id.startsWith("notif-match-");
+            return (
+              <div key={n.id}>
+                {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
+                <button
+                  onClick={() => { onMarkRead(n.id); onNavigate(n.linkedSection); }}
+                  style={{ width: "100%", display: "flex", gap: 12, padding: "14px 16px", background: n.read ? "transparent" : C.iconTileTint, border: "none", cursor: "pointer", textAlign: "left" }}
+                >
+                  <div style={{ width: 36, height: 36, borderRadius: 999, flexShrink: 0, background: isMatch ? C.successBg : C.iconTileTint, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {isMatch ? <Sparkles size={17} color={C.successText} strokeWidth={2} /> : <Bell size={17} color={C.primary} strokeWidth={1.8} />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                      <p style={{ fontSize: 14, fontWeight: n.read ? 500 : 700, color: C.textPrimary, margin: 0, lineHeight: "19px" }}>{n.title}</p>
+                      {!n.read && <span style={{ width: 8, height: 8, borderRadius: 999, background: "#CE1126", flexShrink: 0, marginTop: 5 }} />}
+                    </div>
+                    <p style={{ fontSize: 13, color: C.textSecondary, margin: "3px 0 0", lineHeight: "18px" }}>{n.shortBody}</p>
+                    <p style={{ fontSize: 11, color: C.textTertiary, margin: "6px 0 0" }}>{relativeNotifTime(n.timestamp)}</p>
+                  </div>
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Match Toast — transient "you qualify" banner ─────────────────────────────
+
+function MatchToast({ notification, onDismiss, onOpen }: { notification: NotificationEntity; onDismiss: () => void; onOpen: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDismiss, 5000);
+    return () => clearTimeout(t);
+  }, [notification.id, onDismiss]);
+
+  return (
+    <div
+      role="status"
+      style={{ position: "absolute", top: STATUS_BAR_H + TOP_BAR_H + 10, left: 12, right: 12, zIndex: 70, animation: "toast-slide-in 0.25s ease-out" }}
+    >
+      <style>{`@keyframes toast-slide-in { from { transform: translateY(-16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }`}</style>
+      <button
+        onClick={onOpen}
+        style={{ width: "100%", display: "flex", alignItems: "flex-start", gap: 10, background: C.surface, border: `1px solid ${C.border}`, borderLeft: `4px solid ${C.successText}`, borderRadius: 16, boxShadow: shadow.hero, padding: 14, cursor: "pointer", textAlign: "left" }}
+      >
+        <div style={{ width: 32, height: 32, borderRadius: 999, background: C.successBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Sparkles size={16} color={C.successText} strokeWidth={2} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontFamily: nunito, fontSize: 13, fontWeight: 700, color: C.textPrimary, margin: 0, lineHeight: "18px" }}>{notification.title}</p>
+          <p style={{ fontSize: 12, color: C.textSecondary, margin: "3px 0 0", lineHeight: "16px" }}>{notification.shortBody}</p>
+        </div>
+        <button
+          aria-label="Isara"
+          onClick={(e) => { e.stopPropagation(); onDismiss(); }}
+          style={{ width: 24, height: 24, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer" }}
+        >
+          <X size={14} color={C.textTertiary} strokeWidth={2} />
+        </button>
+      </button>
     </div>
   );
 }
@@ -2993,6 +3102,35 @@ export default function App() {
   const [ecitizenChatOpen, setEcitizenChatOpen] = useState(false);
   const [ecitizenProfile, setEcitizenProfile] = useState<CitizenProfile>(DEFAULT_CITIZEN_PROFILE);
 
+  const [notifications, setNotifications] = useState<NotificationEntity[]>(NOTIFICATIONS);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [matchToast, setMatchToast] = useState<NotificationEntity | null>(null);
+  const notifiedProgramIdsRef = useRef<Set<string>>(new Set());
+
+  // Proactive "you qualify" detection: whenever the recommendation engine
+  // crosses MATCH_THRESHOLD for a program the citizen hasn't already been
+  // notified about, surface it as a notification (+ a transient toast) —
+  // this is the "our algorithm noticed instead of you searching" moment.
+  const MATCH_THRESHOLD = 75;
+  useEffect(() => {
+    if (!ecitizenVerified) return;
+    const recs = computeRecommendations(ecitizenProfile);
+    const newlyQualified = recs.filter((r) => r.matchPercent >= MATCH_THRESHOLD && !notifiedProgramIdsRef.current.has(r.id));
+    if (newlyQualified.length === 0) return;
+
+    newlyQualified.forEach((r) => notifiedProgramIdsRef.current.add(r.id));
+    const newNotifs: NotificationEntity[] = newlyQualified.map((r) => ({
+      id: `notif-match-${r.id}-${Date.now()}`,
+      title: `Kwalipikado ka para sa ${r.name}!`,
+      shortBody: `Batay sa iyong profile, ${r.matchPercent}% match ka sa ${r.name} mula sa ${r.agency}. I-tap para makita ang mga requirements.`,
+      read: false,
+      timestamp: new Date().toISOString(),
+      linkedSection: "ecitizen",
+    }));
+    setNotifications((prev) => [...newNotifs, ...prev]);
+    setMatchToast(newNotifs[0]);
+  }, [ecitizenVerified, ecitizenProfile]);
+
   const [lguState, setLguState] = useState<SectionState>("ready");
   const [feedState, setFeedState] = useState<SectionState>("ready");
   const [carouselState, setCarouselState] = useState<SectionState>("ready");
@@ -3005,7 +3143,7 @@ export default function App() {
   }, []);
 
   const user = CURRENT_USER;
-  const unreadCount = NOTIFICATIONS.filter((n) => !n.read).length;
+  const unreadCount = notifications.filter((n) => !n.read).length;
   const sortedAnnouncements = [...ANNOUNCEMENTS].sort((a, b) => a.displayOrder - b.displayOrder);
   const sortedFeedCards = [...FEED_CARDS].sort((a, b) => b.priorityScore - a.priorityScore);
 
@@ -3040,6 +3178,25 @@ export default function App() {
             onClose={() => setVerificationModalOpen(false)}
           />
         )}
+        {notifOpen && (
+          <NotificationsPanel
+            notifications={notifications}
+            onClose={() => setNotifOpen(false)}
+            onMarkRead={(id) => setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)))}
+            onNavigate={(section) => { setActiveTab(section); setNotifOpen(false); }}
+          />
+        )}
+        {matchToast && (
+          <MatchToast
+            notification={matchToast}
+            onDismiss={() => setMatchToast(null)}
+            onOpen={() => {
+              setNotifications((prev) => prev.map((n) => (n.id === matchToast.id ? { ...n, read: true } : n)));
+              setActiveTab("ecitizen");
+              setMatchToast(null);
+            }}
+          />
+        )}
 
         {/* Status bar */}
         <div aria-hidden="true" style={{ position: "absolute", top: 0, left: 0, right: 0, height: STATUS_BAR_H, display: "flex", alignItems: "center", justifyContent: "space-between", paddingInline: 24, paddingTop: 12, zIndex: 20, background: C.surface }}>
@@ -3060,7 +3217,7 @@ export default function App() {
         </div>
 
         {/* eGovPH shared header */}
-        <ECitizenAppBar unreadCount={unreadCount} onQrScan={() => setQrOpen(true)} onDevHandoff={() => setDevHandoffOpen(true)} />
+        <ECitizenAppBar unreadCount={unreadCount} onQrScan={() => setQrOpen(true)} onDevHandoff={() => setDevHandoffOpen(true)} onOpenNotifications={() => setNotifOpen(true)} />
 
         {/* Digital ID strip (post-verification) */}
         {ecitizenVerified && <DigitalIDStrip />}
