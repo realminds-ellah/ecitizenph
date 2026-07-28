@@ -2974,7 +2974,7 @@ function DemoLoginScreen({ onLogin }: { onLogin: () => void }) {
         </form>
 
         <p style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", textAlign: "center", padding: "16px 28px 32px", lineHeight: "14px", position: "relative", zIndex: 1 }}>
-          Cosmetic demo login lang ito — walang totoong account system. Hindi ito kumokonekta sa anumang tunay na PhilSys o gobyerno na database.
+          Demo access gate — hindi ito bahagi ng isinumite na sistema.
         </p>
       </div>
     </div>
