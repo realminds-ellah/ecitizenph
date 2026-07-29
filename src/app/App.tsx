@@ -9,6 +9,8 @@ import {
   Lock, BookOpen, Briefcase, Leaf, Wallet, ArrowLeftRight, RefreshCw,
   RotateCcw, Camera, type LucideIcon,
 } from "lucide-react";
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import L from "leaflet";
 import "../styles/fonts.css";
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
@@ -123,9 +125,36 @@ interface ActivityItemEntity {
 type EmploymentStatus = "employed" | "self-employed" | "student" | "unemployed" | "retired" | "ofw" | "";
 type IncomeBracket = "under10k" | "10k-24k" | "24k-60k" | "over60k" | "";
 
+// Split into two conceptual groups (rendered as separate cards on the
+// National ID tab): Personal Info — demographic/contact fields, not printed
+// on the physical ID so still editable here, and the single source every
+// other transaction in the app (eReport, program applications) reads from
+// instead of asking the citizen to re-type it — and Other Info — the
+// life-situation fields that actually drive the recommendation algorithm
+// and are expected to go stale over time (income, employment).
 interface CitizenProfile {
+  // Personal Info
+  gender: string;
+  email: string;
+  mobile: string;
   age: number;
   region: string;
+  // Age-bracket-conditional Personal Info — only asked once age crosses
+  // into the relevant bracket (see AGE_BRACKET below).
+  oscaId: string; // shown when age >= 60 (senior citizen / OSCA)
+  guardianName: string; // shown when age < 18 (minor)
+
+  // Health Data — matches the real eGovPH app's "Fill up additional
+  // information" onboarding step (weight/height/eyes color/complexion),
+  // kept on the Digital ID tab alongside Personal Info for the same reason
+  // the real app collects it there: physical descriptors tied to the ID
+  // application itself, not life-situation data.
+  weightKg: string;
+  heightCm: string;
+  eyesColor: string;
+  complexion: string;
+
+  // Other Info
   employmentStatus: EmploymentStatus;
   incomeBracket: IncomeBracket;
   hasSchoolAgeDependents: boolean;
@@ -134,11 +163,38 @@ interface CitizenProfile {
   isMicroEntrepreneur: boolean;
 }
 
+// eGov Docs — paperless government papers (distinct from Digital IDs: these
+// are documents/certificates, not identity credentials). Self-attested only,
+// same "no real file upload" pattern as ApplyModal — see its comment block.
+interface GovDoc {
+  id: string;
+  label: string;
+  onFile: boolean;
+}
+
+type AgeBracket = "minor" | "working-age" | "senior";
+function ageBracketOf(age: number): AgeBracket {
+  if (age < 18) return "minor";
+  if (age >= 60) return "senior";
+  return "working-age";
+}
+
 const DEFAULT_CITIZEN_PROFILE: CitizenProfile = {
-  age: 34, region: "Region III — Gitnang Luzon", employmentStatus: "employed",
+  gender: "Male", email: "juan.delacruz@email.com", mobile: "639170000001",
+  age: 34, region: "Region III — Gitnang Luzon",
+  oscaId: "", guardianName: "",
+  weightKg: "", heightCm: "", eyesColor: "", complexion: "",
+  employmentStatus: "employed",
   incomeBracket: "10k-24k", hasSchoolAgeDependents: true,
   isSoloParent: false, isPWD: false, isMicroEntrepreneur: false,
 };
+
+const GOV_DOCS_SEED: GovDoc[] = [
+  { id: "birth_cert", label: "PSA Birth Certificate", onFile: true },
+  { id: "brgy_clearance", label: "Barangay Clearance", onFile: true },
+  { id: "cert_indigency", label: "Certificate of Indigency", onFile: false },
+  { id: "nbi_clearance", label: "NBI Clearance", onFile: false },
+];
 
 interface MatchedRule {
   description: string;
@@ -422,6 +478,23 @@ function computeRecommendations(profile: CitizenProfile): ProgramRec[] {
         { description: "Buwanang kita sa ibaba ng ₱24,000", matched: isLowIncome },
         { description: "May umaasang anak, PWD, o senior sa pamilya", matched: profile.hasSchoolAgeDependents || profile.isPWD },
         { description: "18 taong gulang pataas", matched: age >= 18 },
+      ],
+    },
+    {
+      id: "tesda", name: "TESDA Training Scholarship", fullName: "TESDA Training for Work Scholarship Program (TWSP)",
+      agency: "TESDA", agencyColor: "#0F7C7C",
+      description: "Libreng skills training at scholarship para sa mga gustong mag-upskill o magbago ng propesyon — mula sa welding hanggang caregiving.",
+      ctaLabel: "Mag-apply sa TESDA",
+      requiredDocuments: [
+        "Verified PhilSys National ID (or PSN)",
+        "Barangay Certificate of Residency",
+        "Certificate of Employment/Unemployment (kung meron)",
+      ],
+      rules: [
+        { description: "Walang trabaho, informal worker, o estudyante", matched: isUnemployed || isInformalWorker || isStudent },
+        { description: "18 taong gulang pataas", matched: age >= 18 },
+        { description: "Monthly household income below ₱60,000", matched: isMidOrLow },
+        { description: "Filipino citizen", matched: true },
       ],
     },
   ];
@@ -1207,7 +1280,13 @@ function EreportSelect({ value, onChange, options, placeholder, disabled, loadin
 
 type ReportStep = "form" | "submitting" | "success" | "failed";
 
-function ReportModal({ onClose }: { onClose: () => void }) {
+function ReportModal({ onClose, user, profile }: { onClose: () => void; user: UserEntity; profile: CitizenProfile }) {
+  // Personal info (name, gender, email, mobile) comes from the shared
+  // National ID profile instead of being re-typed per transaction — see
+  // the "Personal Info" card on the National ID tab, the single source
+  // every flow in the app reads from now.
+  const firstName = user.firstName;
+  const lastName = user.fullName.replace(user.firstName, "").trim();
   const [step, setStep] = useState<ReportStep>("form");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [caseNumber, setCaseNumber] = useState<string | undefined>();
@@ -1233,11 +1312,6 @@ function ReportModal({ onClose }: { onClose: () => void }) {
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
   const [evidencesText, setEvidencesText] = useState("");
-  const [firstName, setFirstName] = useState(CURRENT_USER.firstName);
-  const [lastName, setLastName] = useState("Dela Cruz");
-  const [gender, setGender] = useState("Male");
-  const [email, setEmail] = useState("juan.delacruz@email.com");
-  const [mobile, setMobile] = useState(CURRENT_USER.mobileNumber.replace(/^\+/, ""));
 
   // Load report types + regions once
   useEffect(() => {
@@ -1297,14 +1371,14 @@ function ReportModal({ onClose }: { onClose: () => void }) {
   }, [municipalityCode]);
 
   const isValid = reportType && regionCode && provinceCode && municipalityCode && barangayCode
-    && subject.trim() && message.trim() && firstName.trim() && lastName.trim() && email.trim() && mobile.trim();
+    && subject.trim() && message.trim() && profile.email.trim() && profile.mobile.trim();
 
   async function handleSubmit() {
     setStep("submitting");
     const evidences = evidencesText.split("\n").map((s) => s.trim()).filter(Boolean);
     const result = await submitEreportComplaint({
-      mobile: mobile.replace(/\D/g, ""), first_name: firstName.trim(), last_name: lastName.trim(),
-      gender, complainant_email: email.trim(), report_type: reportType, subject: subject.trim(), message: message.trim(),
+      mobile: profile.mobile.replace(/\D/g, ""), first_name: firstName, last_name: lastName,
+      gender: profile.gender, complainant_email: profile.email.trim(), report_type: reportType, subject: subject.trim(), message: message.trim(),
       evidences, region_code: regionCode, province_code: provinceCode, municipality_code: municipalityCode, barangay_code: barangayCode,
     });
     if (result.ok) {
@@ -1343,35 +1417,18 @@ function ReportModal({ onClose }: { onClose: () => void }) {
                 <EreportSelect value={reportType} onChange={setReportType} options={reportTypes} placeholder="Pumili ng uri" loading={loadingTypes} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <FieldLabel>Pangalan</FieldLabel>
-                  <input value={firstName} onChange={(e) => setFirstName(e.target.value)} style={inputStyle} />
+              {/* Personal info — read-only, pulled from the National ID tab's
+                  Personal Info card instead of asking the citizen to
+                  re-type it here. Update it there if it needs to change. */}
+              <div style={{ background: C.iconTileTint, borderRadius: 14, padding: 12 }}>
+                <p style={{ fontFamily: nunito, fontSize: 11, fontWeight: 700, color: C.primary, textTransform: "uppercase", letterSpacing: "0.5px", margin: "0 0 8px" }}>Mula sa Iyong Profile</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <p style={{ fontSize: 13, margin: 0 }}><span style={{ color: C.textSecondary }}>Pangalan: </span><span style={{ fontWeight: 600, color: C.textPrimary }}>{firstName} {lastName}</span></p>
+                  <p style={{ fontSize: 13, margin: 0 }}><span style={{ color: C.textSecondary }}>Kasarian: </span><span style={{ fontWeight: 600, color: C.textPrimary }}>{profile.gender}</span></p>
+                  <p style={{ fontSize: 13, margin: 0 }}><span style={{ color: C.textSecondary }}>Mobile: </span><span style={{ fontWeight: 600, color: C.textPrimary }}>{profile.mobile}</span></p>
+                  <p style={{ fontSize: 13, margin: 0 }}><span style={{ color: C.textSecondary }}>Email: </span><span style={{ fontWeight: 600, color: C.textPrimary }}>{profile.email}</span></p>
                 </div>
-                <div>
-                  <FieldLabel>Apelyido</FieldLabel>
-                  <input value={lastName} onChange={(e) => setLastName(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <FieldLabel>Kasarian</FieldLabel>
-                  <select value={gender} onChange={(e) => setGender(e.target.value)} style={inputStyle}>
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>Mobile Number</FieldLabel>
-                  <input value={mobile} onChange={(e) => setMobile(e.target.value)} inputMode="numeric" placeholder="639XXXXXXXXX" style={inputStyle} />
-                </div>
-              </div>
-
-              <div>
-                <FieldLabel>Email</FieldLabel>
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
+                <p style={{ fontSize: 11, color: C.textTertiary, margin: "8px 0 0" }}>Mali ba ito? I-update sa National ID tab — Personal Info.</p>
               </div>
 
               <div style={{ height: 1, background: C.border }} />
@@ -1591,13 +1648,13 @@ function TrackReportModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function GovernmentServicesPage() {
+function GovernmentServicesPage({ user, profile }: { user: UserEntity; profile: CitizenProfile }) {
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [trackModalOpen, setTrackModalOpen] = useState(false);
 
   return (
     <div style={{ paddingBottom: 8, position: "relative" }}>
-      {reportModalOpen && <ReportModal onClose={() => setReportModalOpen(false)} />}
+      {reportModalOpen && <ReportModal onClose={() => setReportModalOpen(false)} user={user} profile={profile} />}
       {trackModalOpen && <TrackReportModal onClose={() => setTrackModalOpen(false)} />}
 
       <p style={{ fontFamily: nunito, fontSize: 20, fontWeight: 800, color: C.textPrimary, margin: "20px 16px 16px" }}>Mga Serbisyo ng Pamahalaan</p>
@@ -1634,77 +1691,201 @@ function GovernmentServicesPage() {
 
 // ─── Health Page (Screen 11) ──────────────────────────────────────────────────
 
-const HEALTH_FACILITIES = [
-  { name: "Malolos District Hospital", distance: "0.8km", type: "Ospital" },
-  { name: "Barangay Health Center 1", distance: "1.2km", type: "Health Center" },
-  { name: "PhilHealth Accredited Clinic", distance: "2.1km", type: "Klinika" },
+// ─── ePH: the location layer — emergency, disaster relief, gov't offices,
+// and reporting, all plotted around the citizen's (simulated) location.
+// No real map tiles/GPS are wired in — that would mean a live network
+// dependency (OSM/Mapbox tiles) during what may be a live evaluation, which
+// is a reliability risk this stylized SVG map avoids entirely while still
+// demoing the actual idea: proactive, location-aware government services.
+
+type EphCategory = "emergency" | "disaster" | "office";
+
+interface EphMarker {
+  id: string;
+  category: EphCategory;
+  name: string;
+  subtitle: string;
+  distance: string;
+  lat: number;
+  lng: number;
+}
+
+const EPH_CATEGORY_META: Record<EphCategory, { label: string; color: string }> = {
+  emergency: { label: "Emergency", color: "#CE1126" },
+  disaster: { label: "Disaster Relief", color: "#B77A12" },
+  office: { label: "Gov't Office", color: "#0038A8" },
+};
+
+// Approximate real-world coordinates around Malolos, Bulacan (this app's
+// fictional demo city) — real OpenStreetMap tiles, illustrative pin
+// placements. Not survey-accurate addresses; good enough for a prototype
+// map, not for actual navigation.
+const MALOLOS_CENTER: [number, number] = [14.8433, 120.8114];
+
+const EPH_MARKERS: EphMarker[] = [
+  { id: "pnp", category: "emergency", name: "PNP Malolos City Station", subtitle: "Pulisya", distance: "0.6km", lat: 14.8478, lng: 120.8117 },
+  { id: "hospital", category: "emergency", name: "Malolos District Hospital", subtitle: "Ospital", distance: "0.8km", lat: 14.8408, lng: 120.8070 },
+  { id: "evac", category: "disaster", name: "Malolos Sports Complex", subtitle: "Evacuation Center · Bukas", distance: "1.1km", lat: 14.8534, lng: 120.8145 },
+  { id: "relief", category: "disaster", name: "Relief Goods — Brgy. San Pablo Norte", subtitle: "Ongoing · 9AM–4PM", distance: "1.4km", lat: 14.8398, lng: 120.8188 },
+  { id: "barangay", category: "office", name: "Brgy. San Pablo Norte Hall", subtitle: "LGU Office", distance: "0.4km", lat: 14.8395, lng: 120.8180 },
+  { id: "dswd", category: "office", name: "DSWD Field Office III", subtitle: "Ahensya ng Gobyerno", distance: "2.1km", lat: 14.8501, lng: 120.8050 },
 ];
 
-function HealthPage() {
-  return (
-    <div style={{ paddingBottom: 8 }}>
-      <p style={{ fontFamily: nunito, fontSize: 20, fontWeight: 800, color: C.textPrimary, margin: "20px 16px 12px" }}>Kalusugan</p>
+const EPH_LOCATIONS = ["Brgy. San Pablo Norte, Malolos", "Malolos City Proper", "Barasoain, Malolos", "Sto. Rosario, Malolos"];
 
-      {/* PhilHealth Coverage Card */}
-      <div style={{ margin: "0 16px 24px", background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, padding: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <p style={{ fontFamily: nunito, fontSize: 16, fontWeight: 700, color: C.textPrimary, margin: 0 }}>PhilHealth Konsulta</p>
-          <span style={{ fontFamily: nunito, fontSize: 11, fontWeight: 600, color: C.successText, background: C.successBg, borderRadius: 8, padding: "4px 10px" }}>AKTIBO</span>
+function ephDivIcon(color: string, size = 26) {
+  return L.divIcon({
+    className: "eph-marker",
+    html: `<div style="width:${size}px;height:${size}px;border-radius:999px;background:${color};border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;"></div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function SlideToCall911() {
+  const [value, setValue] = useState(0);
+  const [triggered, setTriggered] = useState(false);
+
+  function handleChange(v: number) {
+    setValue(v);
+    if (v >= 95 && !triggered) {
+      setTriggered(true);
+      window.location.href = "tel:911";
+      setTimeout(() => { setValue(0); setTriggered(false); }, 1500);
+    }
+  }
+
+  return (
+    <div style={{ background: C.surface, borderRadius: 20, border: `2px solid #CE1126`, boxShadow: shadow.card, padding: 16, marginBottom: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <Phone size={18} color="#CE1126" strokeWidth={2} />
+        <p style={{ fontFamily: nunito, fontSize: 15, fontWeight: 800, color: "#CE1126", margin: 0 }}>Emergency SOS</p>
+      </div>
+      <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 4px", lineHeight: "17px" }}>
+        I-drag ang slider para tumawag sa 911. Nagko-coordinate ang 911 sa PNP, BFP, at mga ospital sa buong Pilipinas.
+      </p>
+      <p style={{ fontSize: 11, fontWeight: 700, color: "#CE1126", margin: "0 0 14px" }}>
+        ⚠ TUNAY na tumatawag ito — hindi ito simulation, kaiba sa ibang bahagi ng app na ito.
+      </p>
+      <input
+        type="range" min={0} max={100} value={value}
+        onChange={(e) => handleChange(Number(e.target.value))}
+        aria-label="Slide to call 911"
+        style={{ width: "100%", accentColor: "#CE1126" }}
+      />
+      <p style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: value > 50 ? "#CE1126" : C.textTertiary, margin: "8px 0 0" }}>
+        {triggered ? "Tinatawagan ang 911..." : "I-drag hanggang dulo →"}
+      </p>
+    </div>
+  );
+}
+
+function EPHPage({ user, profile }: { user: UserEntity; profile: CitizenProfile }) {
+  const [activeCategory, setActiveCategory] = useState<EphCategory | "all">("all");
+  const [locationIdx, setLocationIdx] = useState(0);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+
+  const filteredMarkers = activeCategory === "all" ? EPH_MARKERS : EPH_MARKERS.filter((m) => m.category === activeCategory);
+
+  return (
+    <div style={{ paddingBottom: 8, position: "relative" }}>
+      {reportModalOpen && <ReportModal onClose={() => setReportModalOpen(false)} user={user} profile={profile} />}
+      <p style={{ fontFamily: nunito, fontSize: 20, fontWeight: 800, color: C.textPrimary, margin: "20px 16px 4px" }}>ePH</p>
+      <p style={{ fontSize: 13, color: C.textSecondary, margin: "0 16px 16px", lineHeight: "18px" }}>
+        Saan ka man, may proteksyon at serbisyo — emergency, disaster relief, gov't offices, at pag-uulat, nasa isang mapa.
+      </p>
+
+      {/* Location switcher — simulated "pin your location" since there's no real GPS/reverse-geocoding wired in */}
+      <div style={{ margin: "0 16px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, borderRadius: 14, border: `1px solid ${C.border}`, padding: "10px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <MapPin size={16} color={C.primary} strokeWidth={2} style={{ flexShrink: 0 }} />
+          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{EPH_LOCATIONS[locationIdx]}</p>
         </div>
-        <div style={{ marginTop: 12 }}>
-          <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>Juan dela Cruz</p>
-          <p style={{ fontSize: 12, color: C.textSecondary, margin: "2px 0" }}>Miyembro No: 12-345678901-2</p>
-          <p style={{ fontSize: 13, color: C.textSecondary, margin: "4px 0", lineHeight: "18px" }}>Saklaw: Outpatient Konsulta, Emergency Care, Maternity</p>
-          <p style={{ fontSize: 12, color: C.textTertiary, margin: "4px 0 0" }}>Valid hanggang: Disyembre 2026</p>
-        </div>
-        <button style={{ marginTop: 12, fontSize: 14, fontWeight: 500, color: C.accent, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-          Tingnan ang Buong Coverage →
+        <button onClick={() => setLocationIdx((i) => (i + 1) % EPH_LOCATIONS.length)} style={{ fontSize: 12, fontWeight: 600, color: C.accent, background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}>
+          Baguhin
         </button>
       </div>
 
-      {/* Map-style card */}
-      <div style={{ margin: "0 16px 24px", background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-        {/* Map placeholder */}
-        <div style={{ height: 140, position: "relative" }}>
-          <svg width="100%" height="140" viewBox="0 0 358 140" style={{ position: "absolute", inset: 0 }}>
-            <rect width="358" height="140" fill="#E8F0EC" />
-            <rect x="0" y="58" width="358" height="22" fill="#D8E8D4" />
-            <rect x="158" y="0" width="22" height="140" fill="#D8E8D4" />
-            {[78, 270].map((x) => <rect key={x} x={x} y="0" width="10" height="140" fill="#E0ECD8" opacity="0.7" />)}
-            {[18, 112].map((y) => <rect key={y} x="0" y={y} width="358" height="8" fill="#E0ECD8" opacity="0.6" />)}
-            <rect x="10" y="10" width="58" height="38" rx="3" fill="#CCDDCA" />
-            <rect x="198" y="10" width="50" height="38" rx="3" fill="#CCDDCA" />
-            <rect x="10" y="90" width="54" height="38" rx="3" fill="#CCDDCA" />
-            <circle cx="168" cy="69" r="11" fill="#CE1126" />
-            <circle cx="168" cy="69" r="5" fill="#fff" />
-            <circle cx="88" cy="108" r="8" fill="#0038A8" />
-            <circle cx="88" cy="108" r="4" fill="#fff" />
-            <circle cx="258" cy="32" r="8" fill="#0038A8" />
-            <circle cx="258" cy="32" r="4" fill="#fff" />
-          </svg>
-          {/* Overlay pill */}
-          <span style={{ position: "absolute", top: 12, left: 12, fontFamily: nunito, fontSize: 11, fontWeight: 600, color: "#fff", background: "rgba(26,36,51,0.80)", borderRadius: 999, padding: "8px 12px" }}>MALAPIT SA IYO</span>
-        </div>
+      {/* Category filter chips */}
+      <div style={{ margin: "0 16px 16px", display: "flex", gap: 8, overflowX: "auto", scrollbarWidth: "none" }}>
+        {(["all", "emergency", "disaster", "office"] as const).map((cat) => {
+          const active = activeCategory === cat;
+          const label = cat === "all" ? "Lahat" : EPH_CATEGORY_META[cat].label;
+          const color = cat === "all" ? C.primary : EPH_CATEGORY_META[cat].color;
+          return (
+            <button key={cat} onClick={() => setActiveCategory(cat)}
+              style={{ flexShrink: 0, height: 34, paddingInline: 14, borderRadius: 999, fontFamily: nunito, fontSize: 12, fontWeight: 600, color: active ? "#fff" : color, background: active ? color : `${color}15`, border: "none", cursor: "pointer", whiteSpace: "nowrap" }}>
+              {label}
+            </button>
+          );
+        })}
+      </div>
 
-        {/* Bottom section */}
-        <div style={{ padding: 16 }}>
-          <p style={{ fontFamily: nunito, fontSize: 16, fontWeight: 700, color: C.textPrimary, margin: "0 0 4px" }}>Mga Pasilidad ng Kalusugan</p>
-          <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 12px" }}>3 pasilidad ang natagpuan sa loob ng 5km</p>
-          {HEALTH_FACILITIES.map((f, idx) => (
-            <div key={f.name}>
-              {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 0 8px" }} />}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 8 }}>
-                <div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{f.name}</p>
-                  <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>{f.distance} · {f.type}</p>
+      {/* Real map — OpenStreetMap tiles via Leaflet, no API key required.
+          Live network dependency: if the venue WiFi drops during a demo,
+          tiles won't load (grey squares) though pins/popups still work. */}
+      <div style={{ margin: "0 16px 16px", background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, overflow: "hidden", position: "relative" }}>
+        <span style={{ position: "absolute", top: 12, right: 12, zIndex: 1000, fontFamily: nunito, fontSize: 11, fontWeight: 600, color: "#fff", background: "rgba(26,36,51,0.80)", borderRadius: 999, padding: "8px 12px", pointerEvents: "none" }}>IKAW DITO</span>
+        <MapContainer center={MALOLOS_CENTER} zoom={14} scrollWheelZoom={true} style={{ height: 220, width: "100%" }}>
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <Marker position={MALOLOS_CENTER} icon={ephDivIcon("#123C69", 22)}>
+            <Popup>Ikaw dito (simulated)</Popup>
+          </Marker>
+          {filteredMarkers.map((m) => (
+            <Marker key={m.id} position={[m.lat, m.lng]} icon={ephDivIcon(EPH_CATEGORY_META[m.category].color)}>
+              <Popup>
+                <strong>{m.name}</strong><br />
+                {m.distance} · {m.subtitle}
+              </Popup>
+            </Marker>
+          ))}
+        </MapContainer>
+      </div>
+
+      <div style={{ margin: "0 16px" }}>
+        <SlideToCall911 />
+      </div>
+
+      {/* Marker list */}
+      <div style={{ margin: "0 16px 24px" }}>
+        <p style={{ fontFamily: nunito, fontSize: 16, fontWeight: 700, color: C.textPrimary, margin: "0 0 4px" }}>
+          {activeCategory === "all" ? "Malapit Sa Iyo" : EPH_CATEGORY_META[activeCategory].label}
+        </p>
+        <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 12px" }}>{filteredMarkers.length} natagpuan sa loob ng 5km</p>
+        <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+          {filteredMarkers.map((m, idx) => (
+            <div key={m.id}>
+              {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                <div style={{ width: 10, height: 10, borderRadius: 999, background: EPH_CATEGORY_META[m.category].color, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{m.name}</p>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>{m.distance} · {m.subtitle}</p>
                 </div>
                 <button style={{ fontSize: 12, fontWeight: 500, color: C.accent, background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}>
-                  Kumuha ng Direksyon →
+                  Direksyon →
                 </button>
               </div>
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Report at your (pinned) location — reuses the existing eReport flow */}
+      <div style={{ margin: "0 16px" }}>
+        <button onClick={() => setReportModalOpen(true)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, background: C.iconTileTint, borderRadius: 16, border: "none", cursor: "pointer", padding: 16, textAlign: "left" }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: "#6E4AA615", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <AlertTriangle size={20} color="#6E4AA6" strokeWidth={1.8} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>Mag-ulat sa Lugar na Ito</p>
+            <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>eReport — corruption, disaster damage, poor service, at iba pa</p>
+          </div>
+          <ChevronRight size={16} color={C.textTertiary} strokeWidth={2} />
+        </button>
       </div>
     </div>
   );
@@ -1724,7 +1905,7 @@ function ECitizenPreVerification({ onBeginVerification }: { onBeginVerification:
       {/* Feature banner */}
       <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, padding: 16, marginBottom: 24 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <p style={{ fontFamily: nunito, fontSize: 18, fontWeight: 800, color: C.primary, margin: 0 }}>eCitizenPH</p>
+          <p style={{ fontFamily: nunito, fontSize: 18, fontWeight: 800, color: C.primary, margin: 0 }}>National ID</p>
           <span style={{ fontFamily: nunito, fontSize: 10, fontWeight: 600, color: C.primary, background: C.iconTileTint, borderRadius: 999, padding: "4px 10px" }}>INTELLIGENCE LAYER</span>
         </div>
         <p style={{ fontSize: 14, color: C.textSecondary, margin: "8px 0 0", lineHeight: "20px" }}>
@@ -2668,180 +2849,276 @@ const PH_REGIONS = [
   "Region XII — SOCCSKSARGEN", "Region XIII — Caraga", "BARMM", "CAR — Cordillera",
 ];
 
-function ECitizenPostVerification({ profile, onProfileChange, user }: { profile: CitizenProfile; onProfileChange: (p: CitizenProfile) => void; user: UserEntity }) {
-  const [expandedCard, setExpandedCard] = useState<string | null>("4ps");
-  const [applyModalRec, setApplyModalRec] = useState<ProgramRec | null>(null);
-  const [applications, setApplications] = useState<SubmittedApplication[]>([]);
-  const recommendations = computeRecommendations(profile);
-  const appliedIds = new Set(applications.map((a) => a.programId));
+function ECitizenPostVerification({ profile, onProfileChange, user, onOpenIdQr }: { profile: CitizenProfile; onProfileChange: (p: CitizenProfile) => void; user: UserEntity; onOpenIdQr: () => void }) {
+  // eGovPH SSO demo: linking an ID reuses the citizen's already-verified
+  // eVerify session instead of a separate login — that's the whole point of
+  // SSO. /api/sso/exchange is called first; without real EGOVPH_SSO_TOKEN_URL/
+  // CLIENT_SECRET credentials it returns 501, so this falls back to a local
+  // simulation either way, same dev-fallback pattern as eVerify's liveness
+  // check when no VITE_EVERIFY_PUBLIC_KEY is set.
+  const [linkedAccounts, setLinkedAccounts] = useState([
+    { id: "sss",  label: "SSS",        desc: "Social Security System", linked: true,  icon: ShieldCheck, color: "#123C69" },
+    { id: "ph",   label: "PhilHealth", desc: "Miyembro No: 12-345678901-2 · Aktibo",       linked: true,  icon: HeartPulse,  color: "#C13333" },
+    { id: "pi",   label: "Pag-IBIG",   desc: "Housing & Fund",         linked: false, icon: Landmark,    color: "#6941C6" },
+    { id: "umid", label: "UMID",       desc: "Unified Multi-Purpose ID", linked: true, icon: CreditCard, color: "#B77A12" },
+  ]);
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+  const [govDocs, setGovDocs] = useState<GovDoc[]>(GOV_DOCS_SEED);
+  const [infoTab, setInfoTab] = useState<"personal" | "additional">("personal");
+
+  async function handleLink(accId: string) {
+    setLinkingId(accId);
+    try {
+      await fetch("/api/sso/exchange", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ psn: user.idNumber, target_service: accId }),
+      });
+    } catch {
+      // unreachable/not configured — falls back to local simulation below regardless
+    }
+    await new Promise((r) => setTimeout(r, 900));
+    setLinkedAccounts((prev) => prev.map((a) => (a.id === accId ? { ...a, linked: true } : a)));
+    setLinkingId(null);
+  }
 
   function update<K extends keyof CitizenProfile>(key: K, value: CitizenProfile[K]) {
     onProfileChange({ ...profile, [key]: value });
   }
 
-  const empOptions: { value: EmploymentStatus; label: string }[] = [
-    { value: "employed", label: "Employed" },
-    { value: "self-employed", label: "Self-employed" },
-    { value: "student", label: "Estudyante" },
-    { value: "unemployed", label: "Walang Trabaho" },
-    { value: "retired", label: "Retirado" },
-    { value: "ofw", label: "OFW" },
-  ];
-
-  const incomeOptions: { value: IncomeBracket; label: string }[] = [
-    { value: "under10k", label: "Wala pang ₱10,000" },
-    { value: "10k-24k", label: "₱10,000 – ₱24,999" },
-    { value: "24k-60k", label: "₱25,000 – ₱59,999" },
-    { value: "over60k", label: "₱60,000 pataas" },
-  ];
-
   return (
     <div style={{ padding: "16px 16px 0" }}>
-      {applyModalRec && (
-        <ApplyModal
-          rec={applyModalRec}
-          user={user}
-          onClose={() => setApplyModalRec(null)}
-          onSubmitted={(app) => setApplications((prev) => [...prev, app])}
-        />
-      )}
-
-      {/* Feature banner */}
-      <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, padding: 16, marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <p style={{ fontFamily: nunito, fontSize: 18, fontWeight: 800, color: C.primary, margin: 0 }}>eCitizenPH</p>
-            <p style={{ fontSize: 14, color: C.textSecondary, margin: "4px 0 0", lineHeight: "19px" }}>
-              Kumusta, Juan! Nahanap namin ang {recommendations.length} programa para sa iyo.
-            </p>
+      {/* Live e-Copy of the National ID — one of possibly several digital IDs kept here */}
+      <div style={{ marginBottom: 24 }}>
+        <EyebrowRow label="Aking National ID" />
+        <div style={{ background: "linear-gradient(135deg, #123C69 0%, #1B4C82 100%)", borderRadius: 20, padding: 20, boxShadow: shadow.hero, position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", top: -48, right: -48, width: 180, height: 180, borderRadius: 999, background: "rgba(255,255,255,0.04)" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 14, position: "relative" }}>
+            <div style={{ width: 56, height: 56, borderRadius: 999, flexShrink: 0, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: nunito, fontSize: 20, fontWeight: 700, color: "#fff", outline: "2px solid rgba(255,255,255,0.25)", outlineOffset: 2 }}>
+              {initials(user.fullName)}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontFamily: nunito, fontSize: 17, fontWeight: 700, color: "#fff", margin: 0, lineHeight: "22px" }}>{user.fullName}</p>
+              <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", margin: "3px 0 0", letterSpacing: "0.04em" }}>{user.idNumber}</p>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(255,255,255,0.15)", borderRadius: 999, padding: "3px 10px", marginTop: 6 }}>
+                <Check size={11} color="#fff" strokeWidth={2.5} />
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>Verified</span>
+              </span>
+            </div>
+            <button onClick={onOpenIdQr} aria-label="Tingnan ang QR Code" style={{ width: 44, height: 44, borderRadius: 999, background: "rgba(255,255,255,0.15)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <QrCode size={20} color="#fff" strokeWidth={1.8} />
+            </button>
           </div>
-          <RefreshCw size={20} color={C.textTertiary} strokeWidth={1.8} />
         </div>
+        <p style={{ fontSize: 14, color: C.textSecondary, margin: "12px 0 0", lineHeight: "19px" }}>
+          Kumusta, {user.firstName}! Ito ang lahat ng iyong digital IDs at dokumento sa isang lugar.
+        </p>
       </div>
 
-      {/* Citizen Profile Form */}
+      {/* Personal Info — demographic/contact fields. Auto-saved and shared:
+          this is the single source every other transaction (eReport,
+          program applications) reads from instead of asking again. */}
       <div style={{ marginBottom: 24 }}>
-        <EyebrowRow label="Citizen Profile" />
+        <EyebrowRow label="Personal Info" />
+        <p style={{ fontSize: 11, color: C.textTertiary, margin: "-6px 0 10px", lineHeight: "15px" }}>Awtomatikong na-se-save at ginagamit sa lahat ng transaksyon — hindi mo na kailangang ulitin.</p>
         <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, padding: 16 }}>
 
-          {/* Age stepper */}
-          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 8px" }}>Edad</p>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-            <button aria-label="Bawasan ang edad" onClick={() => update("age", Math.max(1, profile.age - 1))} style={{ width: 32, height: 32, borderRadius: 999, background: C.iconTileTint, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 }}>
-              <span style={{ fontFamily: nunito, fontSize: 20, color: C.primary, lineHeight: 1 }}>−</span>
-            </button>
-            <span style={{ fontFamily: nunito, fontSize: 20, fontWeight: 800, color: C.textPrimary }}>{profile.age}</span>
-            <button aria-label="Dagdagan ang edad" onClick={() => update("age", Math.min(120, profile.age + 1))} style={{ width: 32, height: 32, borderRadius: 999, background: C.iconTileTint, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 44, minWidth: 44 }}>
-              <span style={{ fontFamily: nunito, fontSize: 20, color: C.primary, lineHeight: 1 }}>+</span>
-            </button>
+          {/* Read-only, from the verified ID itself */}
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <p style={{ fontSize: 13, color: C.textSecondary, margin: 0 }}>Buong Pangalan</p>
+            <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{user.fullName}</p>
           </div>
-          <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
-
-          {/* Region */}
-          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Rehiyon</p>
-          <select value={profile.region} onChange={(e) => update("region", e.target.value)}
-            style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: profile.region ? C.textPrimary : C.textTertiary, outline: "none", boxSizing: "border-box", marginBottom: 8 }}>
-            <option value="">Pumili ng rehiyon...</option>
-            {PH_REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-          <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
-
-          {/* Employment */}
-          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 8px" }}>Katayuan sa Trabaho</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-            {empOptions.map((opt) => {
-              const active = profile.employmentStatus === opt.value;
-              return (
-                <button key={opt.value} onClick={() => update("employmentStatus", opt.value)}
-                  style={{ height: 38, borderRadius: 12, fontFamily: nunito, fontSize: 13, fontWeight: active ? 600 : 500, color: active ? "#fff" : C.textSecondary, background: active ? C.primary : C.canvas, border: active ? "none" : `1px solid ${C.border}`, cursor: "pointer", transition: "all 0.12s" }}>
-                  {opt.label}
-                </button>
-              );
-            })}
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <p style={{ fontSize: 13, color: C.textSecondary, margin: 0 }}>PSN</p>
+            <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{user.idNumber}</p>
           </div>
-          <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+          <div style={{ height: 1, background: C.border, margin: "0 0 4px" }} />
 
-          {/* Income */}
-          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Buwanang Kita ng Pamilya</p>
-          <select value={profile.incomeBracket} onChange={(e) => update("incomeBracket", e.target.value as IncomeBracket)}
-            style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: profile.incomeBracket ? C.textPrimary : C.textTertiary, outline: "none", boxSizing: "border-box", marginBottom: 8 }}>
-            <option value="">Pumili...</option>
-            {incomeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
-
-          {/* Checkboxes */}
-          <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 10px" }}>Karagdagang Impormasyon</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {/* Two-tab switcher — matches the real eGovPH app's "Personal
+              Information" / "Other Information" pattern (underline on the
+              active tab). Clicking one shows just that form. */}
+          <div style={{ display: "flex", marginBottom: 16 }}>
             {([
-              { key: "hasSchoolAgeDependents" as keyof CitizenProfile, label: "May anak sa paaralan" },
-              { key: "isSoloParent" as keyof CitizenProfile, label: "Solo Parent (RA 11861)" },
-              { key: "isPWD" as keyof CitizenProfile, label: "PWD sa pamilya" },
-              { key: "isMicroEntrepreneur" as keyof CitizenProfile, label: "Micro-entrepreneur" },
-            ] as const).map(({ key, label }) => {
-              const checked = profile[key] as boolean;
+              { key: "personal" as const, label: "Personal Info" },
+              { key: "additional" as const, label: "Additional Info" },
+            ]).map((t) => {
+              const active = infoTab === t.key;
               return (
-                <button key={String(key)} onClick={() => update(key, !checked as CitizenProfile[typeof key])}
-                  style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, minHeight: 28 }}>
-                  <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: checked ? C.primary : C.surface, border: `1.5px solid ${checked ? C.primary : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s" }}>
-                    {checked && <Check size={12} color="#fff" strokeWidth={3} />}
-                  </div>
-                  <p style={{ fontSize: 13, color: C.textPrimary, margin: 0, lineHeight: "18px" }}>{label}</p>
+                <button key={t.key} onClick={() => setInfoTab(t.key)}
+                  style={{ flex: 1, textAlign: "center", background: "none", border: "none", cursor: "pointer", padding: "10px 0 8px", borderBottom: `2px solid ${active ? C.primary : C.border}` }}>
+                  <span style={{ fontFamily: nunito, fontSize: 13, fontWeight: 600, color: active ? C.primary : C.textTertiary }}>{t.label}</span>
                 </button>
               );
             })}
           </div>
+
+          {infoTab === "personal" ? (
+            <>
+              {/* Age */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Edad</p>
+              <input type="number" value={profile.age} onChange={(e) => update("age", Math.max(1, Math.min(120, Number(e.target.value) || 0)))}
+                style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: C.textPrimary, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Gender */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 8px" }}>Kasarian</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                {(["Male", "Female"] as const).map((g) => {
+                  const active = profile.gender === g;
+                  return (
+                    <button key={g} onClick={() => update("gender", g)}
+                      style={{ height: 38, borderRadius: 12, fontFamily: nunito, fontSize: 13, fontWeight: active ? 600 : 500, color: active ? "#fff" : C.textSecondary, background: active ? C.primary : C.canvas, border: active ? "none" : `1px solid ${C.border}`, cursor: "pointer" }}>
+                      {g}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Email */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Email</p>
+              <input type="email" value={profile.email} onChange={(e) => update("email", e.target.value)}
+                style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: C.textPrimary, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Mobile */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Mobile Number</p>
+              <input type="tel" value={profile.mobile} onChange={(e) => update("mobile", e.target.value.replace(/\D/g, ""))}
+                style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: C.textPrimary, outline: "none", boxSizing: "border-box", marginBottom: 8 }} />
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Region */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Rehiyon</p>
+              <select value={profile.region} onChange={(e) => update("region", e.target.value)}
+                style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: profile.region ? C.textPrimary : C.textTertiary, outline: "none", boxSizing: "border-box" }}>
+                <option value="">Pumili ng rehiyon...</option>
+                {PH_REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+
+              {/* Age-bracket-conditional fields — the form adapts once the
+                  detected age bracket changes, instead of showing every
+                  possible field to everyone. */}
+              {ageBracketOf(profile.age) === "senior" && (
+                <>
+                  <div style={{ height: 1, background: C.border, margin: "12px 0" }} />
+                  <p style={{ fontSize: 11, fontWeight: 600, color: C.warningText, background: C.warningBg, display: "inline-block", borderRadius: 8, padding: "3px 8px", margin: "0 0 8px" }}>Senior Citizen — bagong field</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>OSCA Senior Citizen ID Number</p>
+                  <input type="text" value={profile.oscaId} onChange={(e) => update("oscaId", e.target.value)} placeholder="Opsyonal kung wala pa"
+                    style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </>
+              )}
+              {ageBracketOf(profile.age) === "minor" && (
+                <>
+                  <div style={{ height: 1, background: C.border, margin: "12px 0" }} />
+                  <p style={{ fontSize: 11, fontWeight: 600, color: C.warningText, background: C.warningBg, display: "inline-block", borderRadius: 8, padding: "3px 8px", margin: "0 0 8px" }}>Menor de edad — bagong field</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Pangalan ng Guardian</p>
+                  <input type="text" value={profile.guardianName} onChange={(e) => update("guardianName", e.target.value)}
+                    style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {/* Additional Info — matches the real eGovPH app's "Fill up
+                  additional information" step (Weight/Height/Eyes Color/
+                  Complexion). */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 4px" }}>Weight (kg)</p>
+                  <input type="number" value={profile.weightKg} onChange={(e) => update("weightKg", e.target.value)}
+                    style={{ width: "100%", height: 40, borderRadius: 10, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 13, paddingInline: 10, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 4px" }}>Height (cm)</p>
+                  <input type="number" value={profile.heightCm} onChange={(e) => update("heightCm", e.target.value)}
+                    style={{ width: "100%", height: 40, borderRadius: 10, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 13, paddingInline: 10, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 4px" }}>Eyes Color</p>
+                  <input type="text" value={profile.eyesColor} onChange={(e) => update("eyesColor", e.target.value)} placeholder="e.g. Brown"
+                    style={{ width: "100%", height: 40, borderRadius: 10, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 13, paddingInline: 10, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: "0 0 4px" }}>Complexion</p>
+                  <input type="text" value={profile.complexion} onChange={(e) => update("complexion", e.target.value)} placeholder="e.g. Morena"
+                    style={{ width: "100%", height: 40, borderRadius: 10, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 13, paddingInline: 10, color: C.textPrimary, outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* My Applications — appears once at least one program has been applied to */}
-      {applications.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <EyebrowRow label="Aking mga Aplikasyon" />
-          <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-            {applications.map((app, idx) => (
-              <div key={app.id}>
-                {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
-                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 999, background: C.warningBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <Clock size={16} color={C.warningText} strokeWidth={2} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{app.programName}</p>
-                    <p style={{ fontSize: 12, color: C.warningText, margin: "2px 0 0" }}>Isinasaalang-alang · {app.caseNumber}</p>
-                  </div>
+      {/* Aking mga ID — the digital ID wallet. eGovPH SSO means linking one
+          doesn't require a separate login, just the session already
+          verified above. */}
+      <div style={{ marginBottom: 24 }}>
+        <EyebrowRow label="Aking mga ID" />
+        <p style={{ fontSize: 11, color: C.textTertiary, margin: "-6px 0 10px", lineHeight: "15px" }}>
+          Awtomatikong na-lilink gamit ang parehong verified session mo (eGovPH SSO) — walang hiwalay na password.
+        </p>
+        <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, boxShadow: shadow.card, overflow: "hidden" }}>
+          {linkedAccounts.map((acc, idx) => (
+            <div key={acc.id}>
+              {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                <div style={{ width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: `${acc.color}15`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <acc.icon size={20} color={acc.color} strokeWidth={1.8} />
                 </div>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{acc.label}</p>
+                  <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>{acc.desc}</p>
+                </div>
+                {acc.linked ? (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: C.successText, background: C.successBg, padding: "3px 10px", borderRadius: 999 }}>
+                    Linked
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => handleLink(acc.id)}
+                    disabled={linkingId === acc.id}
+                    style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: C.textTertiary, background: C.canvas, padding: "3px 10px", borderRadius: 999, border: "none", cursor: linkingId === acc.id ? "default" : "pointer" }}
+                  >
+                    {linkingId === acc.id ? (<><RefreshCw size={11} strokeWidth={2} /> SSO...</>) : "Link"}
+                  </button>
+                )}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
 
-      {/* Recommendations */}
+      {/* Aking mga Dokumento — eGov Docs: paperless government papers, distinct
+          from the ID cards above. Self-attested only, same "no real file
+          upload" pattern as ApplyModal's document checklist. */}
       <div style={{ marginBottom: 0 }}>
-        <EyebrowRow label="Para Sa Iyo" actionLabel="Na-update ngayon" />
-        {recommendations.length === 0 ? (
-          <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, padding: "24px 20px", textAlign: "center" }}>
-            <Sparkles size={32} color={C.textTertiary} strokeWidth={1.5} style={{ margin: "0 auto 12px", display: "block" }} />
-            <p style={{ fontSize: 14, color: C.textSecondary, margin: 0 }}>I-update ang iyong profile para makita ang mga rekomendasyon.</p>
-          </div>
-        ) : (
-          <>
-            {recommendations.map((rec) => (
-              <RecommendationCard
-                key={rec.id}
-                rec={rec}
-                isExpanded={expandedCard === rec.id}
-                onToggle={() => setExpandedCard(expandedCard === rec.id ? null : rec.id)}
-                onApply={() => setApplyModalRec(rec)}
-                applied={appliedIds.has(rec.id)}
-              />
-            ))}
-            <button style={{ display: "block", width: "100%", marginTop: 4, fontFamily: nunito, fontSize: 14, fontWeight: 600, color: C.accent, background: "none", border: "none", cursor: "pointer", textAlign: "center", minHeight: 44 }}>
-              Tingnan ang lahat ng rekomendasyon ({recommendations.length})
-            </button>
-          </>
-        )}
+        <EyebrowRow label="Aking mga Dokumento" />
+        <p style={{ fontSize: 11, color: C.textTertiary, margin: "-6px 0 10px", lineHeight: "15px" }}>
+          Paperless na kopya ng iyong mga papeles — ito ang gagamitin sa mga aplikasyon sa halip na mag-photocopy paulit-ulit.
+        </p>
+        <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, boxShadow: shadow.card, overflow: "hidden" }}>
+          {govDocs.map((doc, idx) => (
+            <div key={doc.id}>
+              {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+                <div style={{ width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: doc.onFile ? C.successBg : C.canvas, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <FileText size={20} color={doc.onFile ? C.successText : C.textTertiary} strokeWidth={1.8} />
+                </div>
+                <p style={{ flex: 1, fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{doc.label}</p>
+                {doc.onFile ? (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: C.successText, background: C.successBg, padding: "3px 10px", borderRadius: 999 }}>Naka-file</span>
+                ) : (
+                  <button onClick={() => setGovDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, onFile: true } : d)))}
+                    style={{ fontSize: 11, fontWeight: 600, color: C.textTertiary, background: C.canvas, padding: "3px 10px", borderRadius: 999, border: "none", cursor: "pointer" }}>
+                    I-attach
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
       <div style={{ height: 80 }} />
     </div>
@@ -2855,7 +3132,7 @@ function ChatPanel({ profile, recommendations, onClose }: { profile: CitizenProf
   const [messages, setMessages] = useState<{ role: "user" | "bot"; text: string }[]>(() => {
     const intro = topRec
       ? `Kumusta po! Base sa inyong profile, ang **${topRec.name}** mula sa ${topRec.agency} ay may ${topRec.matchPercent}% na match. Maaari po akong tulungan na mag-apply o magpaliwanag ng requirements. Mayroon ba kayong tanong?`
-      : "Kumusta! Ako ang inyong eCitizen AI Assistant. I-fill up na lang po ang inyong profile para makita ang mga programang angkop para sa inyo.";
+      : "Kumusta! Ako si Kuya A. I-fill up na lang po ang inyong profile para makita ang mga programang angkop para sa inyo.";
     return [{ role: "bot", text: intro }];
   });
   const [input, setInput] = useState("");
@@ -2911,7 +3188,7 @@ function ChatPanel({ profile, recommendations, onClose }: { profile: CitizenProf
               <SunburstEmblem size={22} active={true} />
             </div>
             <div>
-              <p style={{ fontFamily: nunito, fontSize: 15, fontWeight: 700, color: C.textPrimary, margin: 0 }}>eCitizen Assistant</p>
+              <p style={{ fontFamily: nunito, fontSize: 15, fontWeight: 700, color: C.textPrimary, margin: 0 }}>Kuya A</p>
               <p style={{ fontSize: 10, color: C.textSecondary, margin: 0 }}>Sumasagot sa Taglish · grounded sa inyong profile</p>
             </div>
           </div>
@@ -2962,44 +3239,51 @@ function ChatPanel({ profile, recommendations, onClose }: { profile: CitizenProf
 
 // ─── Profile Page ─────────────────────────────────────────────────────────────
 
-function ProfilePage({ user }: { user: UserEntity }) {
-  // eGovPH SSO demo: linking an account reuses the citizen's already-verified
-  // eVerify session instead of a separate login — that's the whole point of
-  // SSO. /api/sso/exchange is called first; without real EGOVPH_SSO_TOKEN_URL/
-  // CLIENT_SECRET credentials it returns 501, so this falls back to a local
-  // simulation either way, same dev-fallback pattern as eVerify's liveness
-  // check when no VITE_EVERIFY_PUBLIC_KEY is set.
-  const [linkedAccounts, setLinkedAccounts] = useState([
-    { id: "sss",  label: "SSS",        desc: "Social Security System", linked: true,  icon: ShieldCheck, color: "#123C69" },
-    { id: "ph",   label: "PhilHealth", desc: "Health Insurance",       linked: true,  icon: HeartPulse,  color: "#C13333" },
-    { id: "pi",   label: "Pag-IBIG",   desc: "Housing & Fund",         linked: false, icon: Landmark,    color: "#6941C6" },
-    { id: "umid", label: "UMID",       desc: "Unified Multi-Purpose ID", linked: true, icon: CreditCard, color: "#B77A12" },
-  ]);
-  const [linkingId, setLinkingId] = useState<string | null>(null);
+function ProfilePage({ user, profile, onProfileChange, verified, onGoVerify }: { user: UserEntity; profile: CitizenProfile; onProfileChange: (p: CitizenProfile) => void; verified: boolean; onGoVerify: () => void }) {
+  const [expandedCard, setExpandedCard] = useState<string | null>("4ps");
+  const [applyModalRec, setApplyModalRec] = useState<ProgramRec | null>(null);
+  const [applications, setApplications] = useState<SubmittedApplication[]>([]);
+  const recommendations = verified ? computeRecommendations(profile) : [];
+  const appliedIds = new Set(applications.map((a) => a.programId));
 
-  async function handleLink(accId: string) {
-    setLinkingId(accId);
-    try {
-      await fetch("/api/sso/exchange", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ psn: user.idNumber, target_service: accId }),
-      });
-    } catch {
-      // unreachable/not configured — falls back to local simulation below regardless
-    }
-    await new Promise((r) => setTimeout(r, 900));
-    setLinkedAccounts((prev) => prev.map((a) => (a.id === accId ? { ...a, linked: true } : a)));
-    setLinkingId(null);
+  function update<K extends keyof CitizenProfile>(key: K, value: CitizenProfile[K]) {
+    onProfileChange({ ...profile, [key]: value });
   }
+
+  const empOptions: { value: EmploymentStatus; label: string }[] = [
+    { value: "employed", label: "Employed" },
+    { value: "self-employed", label: "Self-employed" },
+    { value: "student", label: "Estudyante" },
+    { value: "unemployed", label: "Walang Trabaho" },
+    { value: "retired", label: "Retirado" },
+    { value: "ofw", label: "OFW" },
+  ];
+
+  const incomeOptions: { value: IncomeBracket; label: string }[] = [
+    { value: "under10k", label: "Wala pang ₱10,000" },
+    { value: "10k-24k", label: "₱10,000 – ₱24,999" },
+    { value: "24k-60k", label: "₱25,000 – ₱59,999" },
+    { value: "over60k", label: "₱60,000 pataas" },
+  ];
 
   return (
     <div style={{ paddingTop: 16, paddingBottom: 8 }}>
+      {applyModalRec && (
+        <ApplyModal
+          rec={applyModalRec}
+          user={user}
+          onClose={() => setApplyModalRec(null)}
+          onSubmitted={(app) => setApplications((prev) => [...prev, app])}
+        />
+      )}
+
+      {/* FB-profile-style header — this tab is meant to feel like it's
+          truly the citizen's own space, not a settings page. */}
       <div style={{ margin: "0 16px 20px", background: "linear-gradient(135deg, #123C69 0%, #1B4C82 100%)", borderRadius: 20, padding: "20px", position: "relative", overflow: "hidden", boxShadow: shadow.hero }}>
         <div style={{ position: "absolute", top: -40, right: -40, width: 160, height: 160, borderRadius: 999, background: "rgba(255,255,255,0.04)" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
           <div style={{ width: 60, height: 60, borderRadius: 999, flexShrink: 0, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: nunito, fontSize: 22, fontWeight: 700, color: "#fff", outline: "2px solid rgba(255,255,255,0.25)", outlineOffset: 2 }}>
-            JD
+            {initials(user.fullName)}
           </div>
           <div>
             <p style={{ fontFamily: nunito, fontSize: 18, fontWeight: 700, color: "#fff", lineHeight: "24px", margin: 0 }}>{user.fullName}</p>
@@ -3009,50 +3293,132 @@ function ProfilePage({ user }: { user: UserEntity }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(255,255,255,0.13)", borderRadius: 999, padding: "4px 12px" }}>
             <BadgeCheck size={12} color="#fff" strokeWidth={2.5} />
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#fff" }}>Verified</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#fff" }}>Verified Citizen</span>
           </span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.10)", borderRadius: 999, padding: "4px 12px" }}>
-            <CreditCard size={12} color="rgba(255,255,255,0.7)" strokeWidth={2} />
-            <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>₱{user.ewalletBalance.toLocaleString("en-PH", { minimumFractionDigits: 2 })}</span>
-          </span>
+          {verified && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.10)", borderRadius: 999, padding: "4px 12px" }}>
+              <Sparkles size={12} color="rgba(255,255,255,0.85)" strokeWidth={2} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>Kwalipikado sa {recommendations.length} programa</span>
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: "0 16px 20px" }}>
-        <p style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, marginBottom: 2 }}>Linked Accounts</p>
-        <p style={{ fontSize: 11, color: C.textTertiary, margin: "0 0 10px", lineHeight: "15px" }}>
-          Awtomatikong na-lilink gamit ang parehong verified session mo (eGovPH SSO) — walang hiwalay na password.
-        </p>
-        <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, boxShadow: shadow.card, overflow: "hidden" }}>
-          {linkedAccounts.map((acc, idx) => (
-            <div key={acc.id}>
-              {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
-              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                <div style={{ width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: `${acc.color}15`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <acc.icon size={20} color={acc.color} strokeWidth={1.8} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{acc.label}</p>
-                  <p style={{ fontSize: 12, color: C.textSecondary, margin: 0 }}>{acc.desc}</p>
-                </div>
-                {acc.linked ? (
-                  <span style={{ fontSize: 11, fontWeight: 600, color: C.successText, background: C.successBg, padding: "3px 10px", borderRadius: 999 }}>
-                    Linked
-                  </span>
-                ) : (
-                  <button
-                    onClick={() => handleLink(acc.id)}
-                    disabled={linkingId === acc.id}
-                    style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: C.textTertiary, background: C.canvas, padding: "3px 10px", borderRadius: 999, border: "none", cursor: linkingId === acc.id ? "default" : "pointer" }}
-                  >
-                    {linkingId === acc.id ? (<><RefreshCw size={11} strokeWidth={2} /> SSO...</>) : "Link"}
-                  </button>
-                )}
+      {!verified ? (
+        <div style={{ margin: "0 16px 24px", background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, borderLeft: `4px solid ${C.goldAccent}`, padding: 20, textAlign: "center" }}>
+          <Lock size={28} color={C.primary} strokeWidth={1.8} style={{ margin: "0 auto 10px", display: "block" }} />
+          <p style={{ fontFamily: nunito, fontSize: 15, fontWeight: 700, color: C.textPrimary, margin: "0 0 6px" }}>I-unlock muna ang iyong Digital ID</p>
+          <p style={{ fontSize: 13, color: C.textSecondary, margin: "0 0 16px", lineHeight: "18px" }}>Kailangan ng verified Digital ID para makita ang personalized na rekomendasyon dito.</p>
+          <button onClick={onGoVerify} style={{ height: 44, paddingInline: 20, borderRadius: 12, background: C.primary, color: "#fff", fontFamily: nunito, fontSize: 14, fontWeight: 600, border: "none", cursor: "pointer" }}>
+            Pumunta sa Digital ID →
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Tungkol Sa Akin (Other Info) — life-situation fields that
+              drive the recommendation algorithm below. Auto-saved. */}
+          <div style={{ margin: "0 16px 24px" }}>
+            <EyebrowRow label="Tungkol Sa Akin" />
+            <p style={{ fontSize: 11, color: C.textTertiary, margin: "-6px 0 10px", lineHeight: "15px" }}>Ito ang mga sagot na ginagamit ng algorithm — awtomatikong na-a-update ang rekomendasyon kapag nagbago.</p>
+            <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, padding: 16 }}>
+
+              {/* Employment */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 8px" }}>Katayuan sa Trabaho</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                {empOptions.map((opt) => {
+                  const active = profile.employmentStatus === opt.value;
+                  return (
+                    <button key={opt.value} onClick={() => update("employmentStatus", opt.value)}
+                      style={{ height: 38, borderRadius: 12, fontFamily: nunito, fontSize: 13, fontWeight: active ? 600 : 500, color: active ? "#fff" : C.textSecondary, background: active ? C.primary : C.canvas, border: active ? "none" : `1px solid ${C.border}`, cursor: "pointer", transition: "all 0.12s" }}>
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Income */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 6px" }}>Buwanang Kita ng Pamilya</p>
+              <select value={profile.incomeBracket} onChange={(e) => update("incomeBracket", e.target.value as IncomeBracket)}
+                style={{ width: "100%", height: 44, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas, fontSize: 14, paddingInline: 12, color: profile.incomeBracket ? C.textPrimary : C.textTertiary, outline: "none", boxSizing: "border-box", marginBottom: 8 }}>
+                <option value="">Pumili...</option>
+                {incomeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <div style={{ height: 1, background: C.border, margin: "0 0 12px" }} />
+
+              {/* Checkboxes */}
+              <p style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, margin: "0 0 10px" }}>Karagdagang Impormasyon</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {([
+                  { key: "hasSchoolAgeDependents" as keyof CitizenProfile, label: "May anak sa paaralan" },
+                  { key: "isSoloParent" as keyof CitizenProfile, label: "Solo Parent (RA 11861)" },
+                  { key: "isPWD" as keyof CitizenProfile, label: "PWD sa pamilya" },
+                  { key: "isMicroEntrepreneur" as keyof CitizenProfile, label: "Micro-entrepreneur" },
+                ] as const).map(({ key, label }) => {
+                  const checked = profile[key] as boolean;
+                  return (
+                    <button key={String(key)} onClick={() => update(key, !checked as CitizenProfile[typeof key])}
+                      style={{ display: "flex", alignItems: "center", gap: 8, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, minHeight: 28 }}>
+                      <div style={{ width: 20, height: 20, borderRadius: 4, flexShrink: 0, background: checked ? C.primary : C.surface, border: `1.5px solid ${checked ? C.primary : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.12s" }}>
+                        {checked && <Check size={12} color="#fff" strokeWidth={3} />}
+                      </div>
+                      <p style={{ fontSize: 13, color: C.textPrimary, margin: 0, lineHeight: "18px" }}>{label}</p>
+                    </button>
+                  );
+                })}
               </div>
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
+
+          {/* My Applications — appears once at least one program has been applied to */}
+          {applications.length > 0 && (
+            <div style={{ margin: "0 16px 24px" }}>
+              <EyebrowRow label="Aking mga Aplikasyon" />
+              <div style={{ background: C.surface, borderRadius: 20, boxShadow: shadow.card, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+                {applications.map((app, idx) => (
+                  <div key={app.id}>
+                    {idx > 0 && <div style={{ height: 1, background: C.border, margin: "0 16px" }} />}
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 999, background: C.warningBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <Clock size={16} color={C.warningText} strokeWidth={2} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 14, fontWeight: 600, color: C.textPrimary, margin: 0 }}>{app.programName}</p>
+                        <p style={{ fontSize: 12, color: C.warningText, margin: "2px 0 0" }}>Isinasaalang-alang · {app.caseNumber}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Para Sa Iyo — the live recommendation feed, the actual pitch:
+              this is what the real eGovPH app's "Other Information" tab
+              only promises ("Unlock Your Full Experience... automate
+              required processes") without yet delivering. */}
+          <div style={{ margin: "0 16px 24px" }}>
+            <EyebrowRow label="Para Sa Iyo" />
+            {recommendations.length === 0 ? (
+              <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, padding: "24px 20px", textAlign: "center" }}>
+                <Sparkles size={32} color={C.textTertiary} strokeWidth={1.5} style={{ margin: "0 auto 12px", display: "block" }} />
+                <p style={{ fontSize: 14, color: C.textSecondary, margin: 0 }}>I-update ang iyong impormasyon sa itaas para makita ang mga rekomendasyon.</p>
+              </div>
+            ) : (
+              recommendations.map((rec) => (
+                <RecommendationCard
+                  key={rec.id}
+                  rec={rec}
+                  isExpanded={expandedCard === rec.id}
+                  onToggle={() => setExpandedCard(expandedCard === rec.id ? null : rec.id)}
+                  onApply={() => setApplyModalRec(rec)}
+                  applied={appliedIds.has(rec.id)}
+                />
+              ))
+            )}
+          </div>
+        </>
+      )}
 
       <div style={{ margin: "0 16px 8px" }}>
         <div style={{ background: C.surface, borderRadius: 20, border: `1px solid ${C.border}`, boxShadow: shadow.card, overflow: "hidden" }}>
@@ -3285,9 +3651,9 @@ export default function App() {
   const NAV_ITEMS: { label: string; icon?: LucideIcon; tab: string }[] = [
     { label: "Home",       icon: Home,       tab: "home" },
     { label: "Services",   icon: Grid3X3,    tab: "services" },
-    { label: "eCitizenPH",                  tab: "ecitizen" },
-    { label: "Health",     icon: HeartPulse, tab: "health" },
-    { label: "Profile",    icon: User,       tab: "profile" },
+    { label: "Digital ID", icon: CreditCard, tab: "ecitizen" },
+    { label: "ePH",        icon: MapPin,     tab: "health" },
+    { label: "eCitizen",   icon: User,       tab: "profile" },
   ];
 
   if (!loggedIn) {
@@ -3392,26 +3758,35 @@ export default function App() {
           )}
 
           {/* GOVERNMENT SERVICES TAB */}
-          {activeTab === "services" && <GovernmentServicesPage />}
+          {activeTab === "services" && <GovernmentServicesPage user={user} profile={ecitizenProfile} />}
 
           {/* ECITIZEN TAB */}
           {activeTab === "ecitizen" && (
             ecitizenVerified
-              ? <ECitizenPostVerification profile={ecitizenProfile} onProfileChange={setEcitizenProfile} user={user} />
+              ? <ECitizenPostVerification profile={ecitizenProfile} onProfileChange={setEcitizenProfile} user={user} onOpenIdQr={() => setIdQrOpen(true)} />
               : <ECitizenPreVerification onBeginVerification={() => setVerificationModalOpen(true)} />
           )}
 
-          {/* HEALTH TAB */}
-          {activeTab === "health" && <HealthPage />}
+          {/* ePH TAB (formerly Health) — emergency, disaster relief, gov't
+              offices, and reporting, plotted around the citizen's location */}
+          {activeTab === "health" && <EPHPage user={user} profile={ecitizenProfile} />}
 
-          {/* PROFILE TAB */}
-          {activeTab === "profile" && <ProfilePage user={user} />}
+          {/* ECITIZEN TAB (formerly Profile) — the pitch: personalized services */}
+          {activeTab === "profile" && (
+            <ProfilePage
+              user={user}
+              profile={ecitizenProfile}
+              onProfileChange={setEcitizenProfile}
+              verified={ecitizenVerified}
+              onGoVerify={() => setActiveTab("ecitizen")}
+            />
+          )}
 
         </ScrollContent>
 
-        {/* eCitizenPH Floating Chat FAB */}
-        {activeTab === "ecitizen" && ecitizenVerified && !ecitizenChatOpen && (
-          <button aria-label="Open AI Assistant" onClick={() => setEcitizenChatOpen(true)}
+        {/* eCitizen Floating Chat FAB */}
+        {activeTab === "profile" && ecitizenVerified && !ecitizenChatOpen && (
+          <button aria-label="Open Kuya A" onClick={() => setEcitizenChatOpen(true)}
             style={{ position: "absolute", bottom: BOTTOM_NAV_H + SAFE_BOTTOM + 16, right: 24, width: 56, height: 56, borderRadius: 999, background: "#CE1126", border: "2px solid #fff", boxShadow: "0 4px 16px rgba(0,0,0,0.20)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", zIndex: 25, flexDirection: "column" }}>
             <SunburstEmblem size={24} active={true} />
             {/* Pulsing gold dot */}
@@ -3421,7 +3796,7 @@ export default function App() {
         )}
 
         {/* Chat panel overlay */}
-        {activeTab === "ecitizen" && ecitizenVerified && ecitizenChatOpen && (
+        {activeTab === "profile" && ecitizenVerified && ecitizenChatOpen && (
           <ChatPanel profile={ecitizenProfile} recommendations={computeRecommendations(ecitizenProfile)} onClose={() => setEcitizenChatOpen(false)} />
         )}
 
@@ -3429,13 +3804,16 @@ export default function App() {
         <nav aria-label="Tab bar" role="tablist" style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: BOTTOM_NAV_H + SAFE_BOTTOM, background: C.surface, borderTop: `1px solid ${C.border}`, display: "flex", alignItems: "flex-start", zIndex: 20 }}>
           {NAV_ITEMS.map(({ label, icon: Icon, tab }) => {
             const isActive = activeTab === tab;
-            const isEcitizen = tab === "ecitizen";
+            // "eCitizen" (tab id "profile") gets the sunburst/red brand treatment —
+            // it's the pitch/star feature. "Digital ID" (tab id "ecitizen") is
+            // just a utility ID-wallet now, so it gets a standard icon.
+            const isEcitizen = tab === "profile";
             return (
               <button key={tab} role="tab" aria-selected={isActive} aria-label={label} onClick={() => setActiveTab(tab)}
                 style={{ flex: 1, height: BOTTOM_NAV_H, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", paddingTop: 0, position: "relative", background: "none", border: "none", cursor: "pointer" }}>
                 <div style={{ width: isEcitizen ? 20 : 28, height: 3, borderRadius: 999, background: isActive ? (isEcitizen ? "#CE1126" : C.primary) : "transparent", marginBottom: isEcitizen ? 6 : 8, transition: "background 0.15s", flexShrink: 0 }} />
                 <div style={{ position: "relative", marginBottom: 4 }}>
-                  {isEcitizen ? <SunburstEmblem size={24} active={isActive} /> : Icon ? <Icon size={24} strokeWidth={isActive ? 2.2 : 1.8} color={isActive ? C.primary : C.textTertiary} style={{ transition: "color 0.15s" }} /> : null}
+                  {Icon ? <Icon size={24} strokeWidth={isActive ? 2.2 : 1.8} color={isActive ? (isEcitizen ? "#CE1126" : C.primary) : C.textTertiary} style={{ transition: "color 0.15s" }} /> : null}
                 </div>
                 <p style={{ fontFamily: nunito, fontSize: 10, fontWeight: isActive ? 600 : 500, lineHeight: "13px", color: isActive ? (isEcitizen ? "#0038A8" : C.primary) : C.textTertiary, transition: "color 0.15s", margin: 0, letterSpacing: isEcitizen ? "-0.02em" : 0 }}>
                   {label}
